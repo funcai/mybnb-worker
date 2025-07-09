@@ -11,4 +11,4 @@ def handler(job):
     resp.raise_for_status()
     return resp.json()  # whatever the service returns
 
-runpod.serverless.start({"handler": handler, "concurrency_modifier": lambda *: 1})
+runpod.serverless.start({"handler": handler})
