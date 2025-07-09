@@ -3,3 +3,6 @@ fastapi==0.110
 uvicorn[standard]==0.29
 requests
 pydantic
+ollama
+pandas
+json

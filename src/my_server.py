@@ -5,7 +5,7 @@
 
 # OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 # app = FastAPI(title="My helper service")
-import pandas as pd
+# import pandas as pd
 import json
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
