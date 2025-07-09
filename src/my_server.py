@@ -16,6 +16,11 @@ from typing import List, Optional, Union
 from agent_filter import load_apartment_df, filter_apartments
 from prompts import create_questions_prompt, description_match_prompt
 
+
+OLLAMA_MODEL = "gemma3n:e4b"
+# OLLAMA_URL = "http://127.0.0.1:11434"
+DATA_APARTMENTS = "./apartments.json"
+
 # --- Pydantic Models for API validation and structured LLM output ---
 
 class ProcessRequest(BaseModel):
@@ -70,7 +75,8 @@ app = FastAPI(
 )
 
 # --- Data Loading ---
-APARTMENT_DF = load_apartment_df("data/apartments.json")
+APARTMENT_DF = load_apartment_df(DATA_APARTMENTS)
+
 
 # --- Core Logic ---
 def process_request_logic(query: str) -> list[Apartment]:
@@ -81,7 +87,7 @@ def process_request_logic(query: str) -> list[Apartment]:
     prompt = create_questions_prompt(query=query)
     try:
         response = ollama.chat(
-            model='gemma3n:e4b',
+            model=OLLAMA_MODEL,
             messages=[{'role': 'user', 'content': prompt}],
             format='json',
             options={'json_schema': QueryAnalysis.model_json_schema()},
@@ -134,7 +140,7 @@ def process_request_logic(query: str) -> list[Apartment]:
                 match_prompt = description_match_prompt(description=description, question=question_text)
                 try:
                     response = ollama.chat(
-                        model='gemma3n:e4b',
+                        model=OLLAMA_MODEL,
                         messages=[{'role': 'user', 'content': match_prompt}],
                         format=scoring_schema,
                         options={"temperature": 0}
@@ -187,3 +193,9 @@ def generate(req: ProcessRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"An unexpected server error occurred: {e}")
+
+
+# --- Main Execution --- 
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
