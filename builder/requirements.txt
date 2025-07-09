@@ -5,4 +5,3 @@ requests
 pydantic
 ollama
 pandas
-json
