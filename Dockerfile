@@ -1,5 +1,5 @@
-# CUDA-enabled RunPod base (Ubuntu 22.04 + CUDA 12.1 + PyTorch 2.3)
-FROM runpod/pytorch:2.3.0-py3.10-cuda12.1.0-devel-ubuntu22.04
+# Official PyTorch CUDA base (Ubuntu 22.04 + CUDA 12.1 + PyTorch 2.3)
+FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
 
 ARG WORKSPACE_DIR=/workspace
 WORKDIR ${WORKSPACE_DIR}
