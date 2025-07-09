@@ -7,7 +7,10 @@ WORKDIR ${WORKSPACE_DIR}
 # ---------- Ollama (CUDA build) ----------
 # The install script detects the GPU toolchain automatically when it
 # runs inside a CUDA image; no flags needed.
-RUN curl -fsSL https://ollama.ai/install.sh | sh
+RUN apt-get update && apt-get install -y curl fuse-overlayfs \
+    && curl -L https://ollama.com/download/ollama-linux-amd64.tgz -o /tmp/ollama.tgz \
+    && tar -C /usr/local -xzf /tmp/ollama.tgz \
+    && rm /tmp/ollama.tgz
 
 # ---------- Python deps (same as CPU version) ----------
 COPY builder/requirements.txt .
@@ -16,6 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ---------- copy code ----------
 COPY src ./src
 COPY start.sh .
+# ---------- local test files ----------
+COPY test_input.json .
+COPY test_handler.sh .
+RUN chmod +x test_handler.sh
 RUN chmod +x start.sh
 
 # ---------- ports ----------
