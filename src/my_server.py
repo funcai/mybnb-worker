@@ -19,7 +19,9 @@ from prompts import create_questions_prompt, description_match_prompt
 
 OLLAMA_MODEL = "gemma3n:e4b"
 # OLLAMA_URL = "http://127.0.0.1:11434"
-DATA_APARTMENTS = "./apartments.json"
+import os
+BASE_DIR = os.path.dirname(__file__)
+DATA_APARTMENTS = os.path.join(BASE_DIR, "apartments.json")
 
 # --- Pydantic Models for API validation and structured LLM output ---
 

@@ -1,3 +1,0 @@
-models:
-  - model: gemma3n:e4b
-    description: "Default model for text generation"

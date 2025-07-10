@@ -18,8 +18,10 @@ for i in {1..30}; do
   sleep 1
 done
 
-# 2. pull model weights now so the worker is hot right away
-ollama pull gemma3n:e4b
+
+# 3. add src to PYTHONPATH so local imports work without prefix
+# Safely set PYTHONPATH even if it was previously unset
+export PYTHONPATH="/workspace/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 # 3. start FastAPI helper
 uvicorn src.my_server:app --host 0.0.0.0 --port 8000 --workers 1 > /tmp/my_server.log 2>&1 &

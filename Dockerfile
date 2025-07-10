@@ -12,6 +12,15 @@ RUN apt-get update && apt-get install -y curl fuse-overlayfs \
     && tar -C /usr/local -xzf /tmp/ollama.tgz \
     && rm /tmp/ollama.tgz
 
+# ---------- Pre-pull Ollama model ----------
+# Start the Ollama server temporarily, pull the model, then stop the server so the
+# model files are cached inside the image. Using a background server avoids the
+# 'ollama server not responding' error during build.
+RUN ollama serve > /tmp/ollama.log 2>&1 & \
+    bash -c 'for i in {1..30}; do curl -s http://localhost:11434/api/tags && break || sleep 1; done' && \
+    ollama pull gemma3n:e4b && \
+    pkill ollama
+
 # ---------- Python deps (same as CPU version) ----------
 COPY builder/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
