@@ -36,6 +36,10 @@ class ScoreDetail(BaseModel):
 
 class Apartment(BaseModel):
     id: str
+    url: str
+    provider: str
+    address: dict
+    facts: dict
     overall_score: float
     score_details: list[ScoreDetail]
 
@@ -166,10 +170,23 @@ def process_request_logic(query: str) -> list[Apartment]:
             
             overall_score = total_score / len(qualitative_questions) if qualitative_questions else 1.0
         
-        scored_apartments.append(Apartment(id=row["listingId"], overall_score=overall_score, score_details=score_details))
+        scored_apartments.append(
+            Apartment(
+                id=row["_id"]["$oid"],
+
+                url=row.get("url", ""),
+                provider=row.get("provider", ""),
+                address=row.get("address", {}),
+                facts=row.get("facts", {}),
+                overall_score=overall_score,
+                score_details=score_details,
+            )
+        )
 
     # Sort apartments by score, descending
+    # Sort apartments by score, descending and keep only the top 50 results
     scored_apartments.sort(key=lambda x: x.overall_score, reverse=True)
+    scored_apartments = scored_apartments[:50]
     return scored_apartments
 
 # class Req(pydantic.BaseModel):
