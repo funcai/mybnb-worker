@@ -3,5 +3,8 @@ fastapi==0.110
 uvicorn[standard]==0.29
 requests
 pydantic
-ollama
 pandas
+transformers>=4.40.0
+torch>=2.0.0
+accelerator>=0.20.0
+Pillow>=9.0.0

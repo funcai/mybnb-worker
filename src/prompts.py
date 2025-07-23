@@ -5,7 +5,7 @@ def create_questions_prompt(query: str):
 
     First make a list of what the user wants to know based on their request.
     There are existing filters that can be applied to search:
-    ['city_name', 'area_m2', 'rooms', 'beds', 'rent_monthly', 'deposit', 'currency', 'furnished', 'availableFrom']
+    ['city_name', 'area_m2', 'rooms', 'beds', 'rent_monthly', 'deposit', 'currency', 'availableFrom']
     For each question, indicate if one of the filters can be used (true) or not (false).
     If a filterable attribute is not mentioned in the query, its value should be `null`.
 
@@ -49,32 +49,24 @@ def create_questions_prompt(query: str):
 
 def description_match_prompt(description: str, question: str):
     return f"""
-    # General Instructions
-    You are given a description and a question and should indicate whether question matches the description.
-
-    # Example
-    ## Description:
-    "A beautiful apartment with a stunning view of the park."
-    ## Question:
-    "Does the apartment have a nice view?"
-    ## Answer:
-    ```json
-    {{
-        "response": "yes",
-    }}
-    ```
-
-    # Description:
-    {description}
-
-    # Question:
-    {question}
-
-    # Answer options:
-    "yes", "no", "irrelevant"
-    Use "yes" if the description clearly mentions that it matches.
-    Use "no" if the description clearly mentions that it doesn't match.
-    Use "irrelevant" if the description does not contain any definite information about the question.
-
-    Answer in a json.
+    # Task: Analyze apartment description against question
+    
+    You must respond with ONLY a JSON object in this exact format:
+    {{"response": "yes"}} or {{"response": "no"}} or {{"response": "irrelevant"}}
+    
+    # Rules:
+    - Use "yes" if the description clearly mentions that it matches the question
+    - Use "no" if the description clearly mentions that it doesn't match the question  
+    - Use "irrelevant" if the description contains no definite information about the question
+    
+    # Example:
+    Description: "A beautiful apartment with a stunning view of the park."
+    Question: "Does the apartment have a nice view?"
+    Response: {{"response": "yes"}}
+    
+    # Your task:
+    Description: {description}
+    Question: {question}
+    
+    Response (JSON only):
     """

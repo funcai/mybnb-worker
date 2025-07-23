@@ -1,65 +1,39 @@
 # src/my_server.py
 
-# from fastapi import FastAPI
-# import requests, os, pydantic
+# Disable TorchDynamo completely to avoid compatibility issues with Gemma-3n
+import os
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
-# OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
-# app = FastAPI(title="My helper service")
-# import pandas as pd
-import json
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-import ollama
-from typing import List, Optional, Union
+from pydantic import BaseModel
+from typing import List
+import torch
 
 # Local imports from our project files
 from agent_filter import load_apartment_df, filter_apartments
-from prompts import create_questions_prompt, description_match_prompt
+from llm_service import initialize_pipeline
+from query_processor import get_questions_and_filters_from_query
+from apartment_scorer import score_apartments_batch, Apartment, ScoreDetail
+from test_utils import test_pipeline
 
+# Additional TorchDynamo configuration
+torch._dynamo.reset()
+torch._dynamo.config.disable = True
 
-OLLAMA_MODEL = "gemma3n:e4b"
-# OLLAMA_URL = "http://127.0.0.1:11434"
-import os
+app = FastAPI(title="My helper service")
+
 BASE_DIR = os.path.dirname(__file__)
 DATA_APARTMENTS = os.path.join(BASE_DIR, "apartments.json")
 
-# --- Pydantic Models for API validation and structured LLM output ---
+# --- Pydantic Models for API validation ---
 
 class ProcessRequest(BaseModel):
     query: str
 
-class ScoreDetail(BaseModel):
-    question: str
-    score: float
-    explanation: str
-    keyword: str
-
-class Apartment(BaseModel):
-    id: str
-    url: str
-    provider: str
-    address: dict
-    facts: dict
-    overall_score: float
-    score_details: list[ScoreDetail]
-
 class ProcessResponse(BaseModel):
-    apartments: list[Apartment]
+    apartments: List[Apartment]
 
-# Pydantic models for structured output from Ollama
-class Question(BaseModel):
-    question: str
-    can_use_filter: bool
-    filter_name: Optional[str] = None
-    value: Optional[Union[str, int, float, bool]] = None
-    keyword: str
-
-class QueryAnalysis(BaseModel):
-    questions: List[Question]
-
-class ScoringResponse(BaseModel):
-    response: str = Field(description="'yes', 'no', or 'irrelevant'")
-
+# JSON schema for scoring validation (kept for reference)
 scoring_schema = {
     "type": "object",
     "additionalProperties": False,
@@ -68,46 +42,31 @@ scoring_schema = {
         "response": {
             "type": "string",
             "enum": ["yes", "no", "irrelevant"],
-            "description": "Classifier-style verdict"
+            "description": "Whether the apartment matches the question. Answer 'yes' if it matches, 'no' if it doesn't match, or 'irrelevant' if the question doesn't apply to this apartment."
         }
     }
 }
 
-# --- FastAPI App Initialization ---
-app = FastAPI(
-    title="Apartment Search Server",
-    description="An API to find and score apartments based on natural language queries.",
-    version="1.0.0",
-)
+@app.on_event("startup")
+def startup_event():
+    """Initialize the pipeline on startup."""
+    print("Starting up the application...")
+    initialize_pipeline()
+    print("Application startup complete!")
 
 # --- Data Loading ---
 APARTMENT_DF = load_apartment_df(DATA_APARTMENTS)
 
 
 # --- Core Logic ---
-def process_request_logic(query: str) -> list[Apartment]:
-    """Processes a user query to find and score apartments."""
+def process_request_logic(query: str) -> List[Apartment]:
+    """Processes a user query to find and score apartments using batch processing."""
     print(f"Processing query: {query}")
 
-    # Step 1: Use LLM to analyze the query and extract filters/questions
-    prompt = create_questions_prompt(query=query)
-    try:
-        response = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[{'role': 'user', 'content': prompt}],
-            format='json',
-            options={'json_schema': QueryAnalysis.model_json_schema()},
-        )
-        llm_response_str = response['message']['content']
-        print(f"LLM response for query analysis: {llm_response_str}")
-        query_analysis = QueryAnalysis.model_validate_json(llm_response_str)
-        questions = [q.model_dump() for q in query_analysis.questions]
-    except Exception as e:
-        print(f"FATAL: Could not get or validate structured response for query analysis: {e}")
-        raise HTTPException(status_code=500, detail="Failed to analyze query with LLM")
+    # Step 1: Process query to extract filters and qualitative questions
+    filters, qualitative_questions = get_questions_and_filters_from_query(query)
 
     # Step 2: Apply extracted filters to get candidate apartments
-    filters = {q['filter_name']: q['value'] for q in questions if q.get('can_use_filter') and q.get('value') is not None}
     print(f"Extracted filters: {filters}")
     candidate_df = filter_apartments(
         df=APARTMENT_DF,
@@ -117,104 +76,46 @@ def process_request_logic(query: str) -> list[Apartment]:
         beds=filters.get('beds'),
         deposit=filters.get('deposit'),
         currency=filters.get('currency'),
-        furnished=filters.get('furnished'),
         availableFrom=filters.get('availableFrom'),
         city_name=filters.get('city_name')
     )
     print(f"Found {len(candidate_df)} candidates after initial filtering.")
 
-    # Step 3: Score candidate apartments based on qualitative questions
-    qualitative_questions = [q for q in questions if not q.get('can_use_filter')]
-    scored_apartments = []
+    # Step 3: Score candidate apartments based on qualitative questions using batch processing
+    scored_apartments = score_apartments_batch(candidate_df, qualitative_questions)
 
-    for _, row in candidate_df.iterrows():
-        description = row["description"]
-        score_details = []
-        total_score = 0
-
-        if not qualitative_questions:
-            overall_score = 1.0
-        else:
-            for question_obj in qualitative_questions:
-                question_text = question_obj.get("question", "")
-                keyword = question_obj.get("keyword", "")
-                if not question_text:
-                    continue
-
-                question_score = 0
-                llm_explanation = "Error during scoring."
-                match_prompt = description_match_prompt(description=description, question=question_text)
-                try:
-                    response = ollama.chat(
-                        model=OLLAMA_MODEL,
-                        messages=[{'role': 'user', 'content': match_prompt}],
-                        format=scoring_schema,
-                        options={"temperature": 0}
-                        # options={'json_schema': ScoringResponse.model_json_schema()},
-                    )
-                    llm_response_str = response['message']['content']
-                    print(f"Scoring apt {row['listingId']} for question '{question_text}': {llm_response_str}")
-                    scoring_response = ScoringResponse.model_validate_json(llm_response_str)
-                    response_text = scoring_response.response.lower()
-                    llm_explanation = response_text
-                except Exception as e:
-                    print(f"  - WARN: Could not get structured response from LLM: {e}. Defaulting to 'maybe'.")
-                    response_text = "maybe"
-                    llm_explanation = str(e)
-
-                if "yes" in response_text:
-                    question_score = 1.0
-                
-                score_details.append(ScoreDetail(question=question_text, score=question_score, explanation=llm_explanation, keyword=keyword))
-                total_score += question_score
-            
-            overall_score = total_score / len(qualitative_questions) if qualitative_questions else 1.0
-        
-        scored_apartments.append(
-            Apartment(
-                id=row["_id"]["$oid"],
-
-                url=row.get("url", ""),
-                provider=row.get("provider", ""),
-                address=row.get("address", {}),
-                facts=row.get("facts", {}),
-                overall_score=overall_score,
-                score_details=score_details,
-            )
-        )
-
-    # Sort apartments by score, descending
     # Sort apartments by score, descending and keep only the top 50 results
+    print(f"\nFinal results:")
+    print(f"  Total apartments before sorting: {len(scored_apartments)}")
+    
     scored_apartments.sort(key=lambda x: x.overall_score, reverse=True)
     scored_apartments = scored_apartments[:50]
+    
+    print(f"  Returning top {len(scored_apartments)} apartments")
+    if scored_apartments:
+        print(f"  Score range: {scored_apartments[0].overall_score:.2f} to {scored_apartments[-1].overall_score:.2f}")
+    
     return scored_apartments
 
-# class Req(pydantic.BaseModel):
-#     prompt: str = "Hello RunPod"
-
 @app.post("/generate", response_model=ProcessResponse)
-def generate(req: ProcessRequest):
-    # payload = {"model": "gemma3n:e4b", "prompt": body.prompt, "stream": False}
-    # r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=120)
-    # r.raise_for_status()
-    # return r.json()  # FastAPI turns this into JSON for us
-    
+def generate(req: ProcessRequest) -> ProcessResponse:
+    """Main API endpoint for processing apartment search queries."""
     try:
         apartments = process_request_logic(req.query)
         return ProcessResponse(apartments=apartments)
-    except HTTPException as e:
-        # Re-raise HTTPException to let FastAPI handle it
-        raise e
+    except HTTPException:
+        raise
     except Exception as e:
-        # Catch any other unexpected errors
-        print(f"FATAL: An unexpected error occurred in process_request: {e}")
-        # Optionally log the full traceback here
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"An unexpected server error occurred: {e}")
+        print(f"Unexpected error in generate endpoint: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # --- Main Execution --- 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        test_pipeline()
+    else:
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)
