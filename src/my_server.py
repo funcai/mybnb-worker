@@ -11,10 +11,9 @@ import torch
 
 # Local imports from our project files
 from agent_filter import load_apartment_df, filter_apartments
-from llm_service import initialize_pipeline
+from llm_service import initialize_vision_pipeline
 from query_processor import get_questions_and_filters_from_query
 from apartment_scorer import score_apartments_batch, Apartment, ScoreDetail
-from test_utils import test_pipeline
 
 # Additional TorchDynamo configuration
 torch._dynamo.reset()
@@ -51,7 +50,7 @@ scoring_schema = {
 def startup_event():
     """Initialize the pipeline on startup."""
     print("Starting up the application...")
-    initialize_pipeline()
+    initialize_vision_pipeline()
     print("Application startup complete!")
 
 # --- Data Loading ---
@@ -112,10 +111,5 @@ def generate(req: ProcessRequest) -> ProcessResponse:
 
 # --- Main Execution --- 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "test":
-        test_pipeline()
-    else:
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
