@@ -1,8 +1,4 @@
 """
-Apartment Filtering Agent using Ollama (gemma3n:e4b)
-
-This script spins up a simple CLI agent backed by Ollama that knows one tool:
-`filter_apartments`.
 
 The tool filters a pandas DataFrame of apartment listings by:
   • exact number of rooms (`rooms`)
@@ -20,13 +16,9 @@ Type `exit` or `quit` to leave.
 from __future__ import annotations
 
 import json
-# import sys
 from typing import Any, Dict
 
 import pandas as pd
-# from langchain.agents import Tool, initialize_agent
-# from langchain_community.llms import Ollama
-
 # ---------------------------------------------------------------------------
 # Data loading helpers
 # ---------------------------------------------------------------------------
