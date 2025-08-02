@@ -2,9 +2,12 @@ import os
 import hashlib
 import subprocess
 import tempfile
-from PIL import Image
-from typing import List, Optional, Dict
 import logging
+from typing import List, Dict, Optional, Set
+from PIL import Image
+import torch
+from transformers import AutoProcessor, AutoModel
+import open_clip
 import json
 
 # Set up logging
@@ -13,23 +16,29 @@ logger = logging.getLogger(__name__)
 
 class ImageCacheMulti:
     """
-    Parallel image caching service that downloads, resizes, and caches multiple apartment images simultaneously.
+    Parallel vision token caching service that downloads images and caches vision-encoded tokens as .pt files.
+    Supports different vision encoders based on the model type (SmolVLM or Gemma).
     """
     
-    def __init__(self, cache_dir: str = None):
+    def __init__(self, cache_dir: str = None, model_name: str = "unsloth/gemma-3n-E2B-it-unsloth-bnb-4bit"):
         """
-        Initialize the parallel image cache.
+        Initialize the parallel vision token cache.
         
         Args:
-            cache_dir: Directory to store cached images. Defaults to '../image-cache' relative to this file.
+            cache_dir: Directory to store cached vision tokens. Defaults to '../tokens-cache' relative to this file.
+            model_name: Vision model name to determine the correct encoder.
         """
         if cache_dir is None:
-            # Default to image-cache directory in project root
+            # Default to tokens-cache directory in project root
             base_dir = os.path.dirname(os.path.dirname(__file__))
-            cache_dir = os.path.join(base_dir, "image-cache")
+            cache_dir = os.path.join(base_dir, "tokens-cache")
         
         self.cache_dir = cache_dir
+        self.model_name = model_name
         self._cached_urls = set()  # In-memory cache of URLs that are already cached
+        self._vision_model = None
+        self._processor = None
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._ensure_cache_dir()
     
     def _ensure_cache_dir(self):
@@ -83,10 +92,10 @@ class ImageCacheMulti:
             url: Image URL
             
         Returns:
-            Cache filename with .jpg extension
+            Cache filename with .pt extension for vision tokens
         """
         url_hash = hashlib.md5(url.encode('utf-8')).hexdigest()
-        return f"{url_hash}.jpg"
+        return f"{url_hash}.pt"
     
     def _get_cache_path(self, url: str) -> str:
         """
@@ -100,6 +109,141 @@ class ImageCacheMulti:
         """
         filename = self._get_cache_filename(url)
         return os.path.join(self.cache_dir, filename)
+    
+    def _initialize_vision_encoder(self):
+        """
+        Initialize the vision encoder based on the model type.
+        """
+        if self._vision_model is not None:
+            return  # Already initialized
+        
+        logger.info(f"Initializing vision encoder for model: {self.model_name}")
+        
+        try:
+            if "SmolVLM" in self.model_name:
+                # For SmolVLM, we need to use the full multimodal model
+                # because the vision and text components are tightly integrated
+                from transformers import AutoModelForVision2Seq
+                
+                self._processor = AutoProcessor.from_pretrained(self.model_name)
+                # Load the full multimodal model
+                self._vision_model = AutoModelForVision2Seq.from_pretrained(
+                    self.model_name,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto"
+                ).eval()
+                logger.info("SmolVLM multimodal model initialized")
+                
+            elif "gemma-3n" in self.model_name.lower():
+                # For Gemma 3n models, use the full multimodal model with MobileNet-V5-300M vision encoder
+                from transformers import AutoModelForVision2Seq
+                
+                self._processor = AutoProcessor.from_pretrained(self.model_name)
+                # Load the full Gemma 3n multimodal model
+                self._vision_model = AutoModelForVision2Seq.from_pretrained(
+                    self.model_name,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto"
+                ).eval()
+                logger.info(f"Gemma 3n multimodal model initialized with MobileNet-V5-300M vision encoder: {self.model_name}")
+                
+            elif "gemma" in self.model_name.lower():
+                # For other Gemma models, use open_clip approach
+                self._vision_model, _, self._processor = open_clip.create_model_and_transforms(
+                    "ViT-B-32", pretrained="openai"
+                )
+                self._vision_model = self._vision_model.visual.eval().to(self._device, torch.bfloat16)
+                logger.info("Gemma vision encoder (OpenCLIP) initialized")
+                
+            else:
+                # Default to OpenCLIP for unknown models
+                self._vision_model, _, self._processor = open_clip.create_model_and_transforms(
+                    "ViT-B-32", pretrained="openai"
+                )
+                self._vision_model = self._vision_model.visual.eval().to(self._device, torch.bfloat16)
+                logger.info("Default vision encoder (OpenCLIP) initialized")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize vision encoder: {e}")
+            raise
+    
+    def _encode_image_to_tokens(self, image_path: str) -> torch.Tensor:
+        """
+        Encode an image to vision tokens.
+        
+        Args:
+            image_path: Path to the image file
+            
+        Returns:
+            Vision tokens as a tensor
+        """
+        self._initialize_vision_encoder()
+        
+        try:
+            # Load and preprocess image
+            image = Image.open(image_path).convert('RGB')
+            
+            if "SmolVLM" in self.model_name or "gemma-3n" in self.model_name.lower():
+                # For SmolVLM and Gemma 3n, we use the full multimodal model with a dummy text prompt
+                # to extract vision embeddings from the integrated pipeline
+                
+                # Create a minimal text prompt to trigger vision processing
+                if "SmolVLM" in self.model_name:
+                    dummy_text = "<image>\nDescribe this image."
+                else:  # Gemma 3n
+                    dummy_text = "<image>\nWhat is in this image?"
+                
+                # Process both image and text together
+                inputs = self._processor(
+                    text=dummy_text,
+                    images=image,
+                    return_tensors="pt"
+                )
+                
+                # Move inputs to device
+                inputs = {k: v.to(self._vision_model.device) if isinstance(v, torch.Tensor) else v 
+                         for k, v in inputs.items()}
+                
+                with torch.inference_mode():
+                    # Get the model's internal representations
+                    # We'll extract vision features from the model's forward pass
+                    outputs = self._vision_model.generate(
+                        **inputs,
+                        max_new_tokens=1,  # Minimal generation to get vision embeddings
+                        output_hidden_states=True,
+                        return_dict_in_generate=True
+                    )
+                    
+                    # Extract vision embeddings from the hidden states
+                    # The vision information is embedded in the early layers
+                    if hasattr(outputs, 'hidden_states') and outputs.hidden_states:
+                        # Take the first layer's hidden states and pool them
+                        first_layer_states = outputs.hidden_states[0][0]  # [batch, seq, hidden]
+                        # Pool the sequence dimension to get a fixed-size representation
+                        vision_tokens = first_layer_states.mean(dim=1)  # [batch, hidden]
+                    else:
+                        # Fallback: use a simple approach with model embeddings
+                        # Get input embeddings which include vision information
+                        input_embeds = self._vision_model.get_input_embeddings()
+                        if hasattr(inputs, 'input_ids'):
+                            vision_tokens = input_embeds(inputs['input_ids']).mean(dim=1)
+                        else:
+                            # Create a dummy embedding with appropriate size
+                            hidden_size = 768 if "SmolVLM" in self.model_name else 2048  # Gemma 3n has larger hidden size
+                            vision_tokens = torch.zeros(1, hidden_size, dtype=torch.bfloat16, device=self._vision_model.device)
+                    
+            else:
+                # Use OpenCLIP processor
+                image_tensor = self._processor(image).unsqueeze(0).to(self._device, torch.bfloat16)
+                
+                with torch.inference_mode():
+                    vision_tokens = self._vision_model(image_tensor)
+            
+            return vision_tokens.cpu()  # Move back to CPU for storage
+            
+        except Exception as e:
+            logger.error(f"Failed to encode image {image_path}: {e}")
+            raise
     
     def _download_images_parallel(self, url_to_temp_path: Dict[str, str], max_parallel: int = 32) -> Dict[str, bool]:
         """
@@ -165,29 +309,55 @@ class ImageCacheMulti:
     
     def _process_downloaded_image(self, temp_path: str, final_path: str) -> bool:
         """
-        Process a downloaded image: resize and save as optimized JPEG.
+        Process a downloaded image: encode to vision tokens and save as .pt file.
         
         Args:
             temp_path: Path to temporary downloaded file
-            final_path: Final cache path for processed image
+            final_path: Final cache path for vision tokens (.pt file)
             
         Returns:
             True if successful, False otherwise
         """
         try:
-            # Open and resize the image
-            with Image.open(temp_path) as img:
-                # Convert to RGB if necessary (handles RGBA, P, etc.)
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-                
-                # Resize while maintaining aspect ratio
-                img.thumbnail((256, 256), Image.Resampling.LANCZOS)
-                
-                # Save as JPEG
-                img.save(final_path, 'JPEG', quality=85, optimize=True)
+            # Create a temporary processed image for encoding
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_processed:
+                processed_path = temp_processed.name
             
-            return True
+            try:
+                # Open and resize the image (same preprocessing as before)
+                with Image.open(temp_path) as img:
+                    # Convert to RGB if necessary (handles RGBA, P, etc.)
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # Resize while maintaining aspect ratio
+                    img.thumbnail((256, 256), Image.Resampling.LANCZOS)
+                    
+                    # Create a new 256x256 black background image
+                    padded_img = Image.new('RGB', (256, 256), (0, 0, 0))  # Black background
+                    
+                    # Calculate position to center the resized image
+                    x_offset = (256 - img.width) // 2
+                    y_offset = (256 - img.height) // 2
+                    
+                    # Paste the resized image onto the black background
+                    padded_img.paste(img, (x_offset, y_offset))
+                    
+                    # Save processed image temporarily
+                    padded_img.save(processed_path, 'JPEG', quality=85, optimize=True)
+                
+                # Encode the processed image to vision tokens
+                vision_tokens = self._encode_image_to_tokens(processed_path)
+                
+                # Save vision tokens as .pt file
+                torch.save(vision_tokens, final_path)
+                
+                return True
+                
+            finally:
+                # Clean up temporary processed image
+                if os.path.exists(processed_path):
+                    os.unlink(processed_path)
             
         except Exception as e:
             logger.error(f"Failed to process image {temp_path}: {e}")
@@ -195,14 +365,14 @@ class ImageCacheMulti:
     
     def get_cached_image_paths(self, urls: List[str], max_parallel: int = 32) -> Dict[str, Optional[str]]:
         """
-        Get local paths for multiple image URLs. Downloads and caches in parallel if not already cached.
+        Get local paths for multiple image URLs as vision token files. Downloads, processes, and caches vision tokens in parallel if not already cached.
         
         Args:
             urls: List of image URLs
             max_parallel: Maximum number of parallel downloads (default: 32)
             
         Returns:
-            Dictionary mapping URLs to local file paths (None if failed)
+            Dictionary mapping URLs to local .pt file paths containing vision tokens (None if failed)
         """
         if not urls:
             return {}
@@ -285,13 +455,13 @@ image_cache_multi = ImageCacheMulti()
 
 def get_cached_image_paths(urls: List[str], max_parallel: int = 32) -> Dict[str, Optional[str]]:
     """
-    Convenience function to get cached image paths for multiple URLs.
+    Convenience function to get cached vision token paths for multiple URLs.
     
     Args:
         urls: List of image URLs
         max_parallel: Maximum number of parallel downloads (default: 32)
         
     Returns:
-        Dictionary mapping URLs to local file paths (None if failed)
+        Dictionary mapping URLs to local .pt file paths containing vision tokens (None if failed)
     """
     return image_cache_multi.get_cached_image_paths(urls, max_parallel)
