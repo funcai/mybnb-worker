@@ -96,6 +96,11 @@ def process_request_logic(query: str) -> List[Apartment]:
     
     return scored_apartments
 
+@app.get("/healthz")
+def healthz():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
 @app.post("/generate", response_model=ProcessResponse)
 def generate(req: ProcessRequest) -> ProcessResponse:
     """Main API endpoint for processing apartment search queries."""
