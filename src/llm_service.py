@@ -4,8 +4,12 @@ import os
 import json
 import re
 import torch
-from transformers import pipeline
+from transformers import pipeline, BitsAndBytesConfig
 from typing import List, Tuple
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Disable TorchDynamo completely to avoid compatibility issues with Gemma-3n
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
@@ -15,29 +19,39 @@ torch._dynamo.reset()
 torch._dynamo.config.disable = True
 
 # Global pipeline instances
-HF_MODEL = "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit"
 VISION_MODEL = "unsloth/gemma-3n-E4B-it-unsloth-bnb-4bit"  # Using same model for both text and vision
 vision_pipe = None
 
 
 def initialize_vision_pipeline():
-    """Initialize the HuggingFace vision pipeline for gemma-3n-E4B."""
+    """Initialize the HuggingFace vision pipeline for gemma-3n-E4B with aggressive memory optimization."""
     global vision_pipe
     if vision_pipe is None:
-        print("Initializing HuggingFace vision pipeline...")
+        print("Initializing HuggingFace vision pipeline with memory optimization...")
         # Require CUDA - fail if not available
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is required but not available. Please ensure GPU is accessible.")
         
+        # Get batch size from environment variable, default to 50
+        batch_size = int(os.getenv('VISION_BATCH_SIZE', '50'))
+        print(f"Using vision batch size: {batch_size}")
+        
+        # Configure aggressive quantization for lower memory usage
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4"  # NormalFloat4 quantization
+        )
+        
         # Use image-text-to-text pipeline for vision inference with optimizations
-        # Note: device parameter removed because model uses accelerate for automatic device placement
         vision_pipe = pipeline(
             "image-text-to-text",
             model=VISION_MODEL,
+            quantization_config=quantization_config,
             torch_dtype=torch.bfloat16,
-            batch_size=50  # Increased batch size for better GPU utilization
+            batch_size=batch_size,
         )
-        print("Vision pipeline initialized successfully on GPU! (Multimodal model)")
+        print("Vision pipeline initialized successfully on GPU with aggressive quantization!")
     return vision_pipe
 
 
@@ -247,7 +261,7 @@ def batch_generate_vision(image_text_pairs: List[Tuple], max_new_tokens: int = 2
         
         # Use the pipeline with IterableDataset for true batching
         # This enables proper DataLoader usage and GPU-parallel processing
-        batch_size = 100  # Start with smaller batch size for testing
+        batch_size = int(os.getenv('VISION_BATCH_SIZE', '50'))
         batch_outputs = []
         
         print(f"🔍 Processing with batch_size={batch_size}")
