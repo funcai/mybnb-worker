@@ -62,15 +62,77 @@ def format_prompt_for_hf(prompt: str) -> str:
     return f"<start_of_turn>user\n{prompt}<end_of_turn>\n<start_of_turn>model\n"
 
 
+def extract_assistant_response(output) -> str:
+    """
+    Extract only the assistant's response from various output formats.
+    Handles conversation structures, strings, and other formats.
+    """
+    try:
+        # If it's already a string, return it
+        if isinstance(output, str):
+            return output.strip()
+        
+        # If it's a list of messages (conversation format)
+        if isinstance(output, list):
+            for message in output:
+                if isinstance(message, dict) and message.get('role') == 'assistant':
+                    content = message.get('content', '')
+                    if isinstance(content, str):
+                        return content.strip()
+                    elif isinstance(content, list):
+                        # Handle content as list of parts
+                        text_parts = []
+                        for part in content:
+                            if isinstance(part, dict) and part.get('type') == 'text':
+                                text_parts.append(part.get('text', ''))
+                        return ' '.join(text_parts).strip()
+            
+            # If no assistant message found, try to extract from last item
+            if output:
+                last_item = output[-1]
+                if isinstance(last_item, dict):
+                    if 'content' in last_item:
+                        content = last_item['content']
+                        if isinstance(content, str):
+                            return content.strip()
+                        elif isinstance(content, list):
+                            text_parts = []
+                            for part in content:
+                                if isinstance(part, dict) and part.get('type') == 'text':
+                                    text_parts.append(part.get('text', ''))
+                            return ' '.join(text_parts).strip()
+                    return str(last_item).strip()
+        
+        # If it's a dict, try to extract content
+        if isinstance(output, dict):
+            if 'content' in output:
+                content = output['content']
+                if isinstance(content, str):
+                    return content.strip()
+                elif isinstance(content, list):
+                    text_parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get('type') == 'text':
+                            text_parts.append(part.get('text', ''))
+                    return ' '.join(text_parts).strip()
+            return str(output).strip()
+        
+        # Fallback: convert to string
+        return str(output).strip()
+        
+    except Exception as e:
+        print(f"Error extracting assistant response: {e}")
+        return None
+
+
 def extract_json_from_response(response: str) -> dict:
     """Extract JSON from HuggingFace response text with robust parsing."""
     # Clean the response
     response = response.strip()
-    
     # If response is empty, return a default
     if not response:
         print("Empty response received, using default 'maybe' response")
-        return {"response": "maybe"}
+        return {"llmResponse": None}
     
     try:
         # Method 1: Look for JSON in code blocks
@@ -87,26 +149,44 @@ def extract_json_from_response(response: str) -> dict:
         return json.loads(response)
         
     except json.JSONDecodeError:
-        # Method 4: Look for simple yes/no/irrelevant responses
+        # Method 4: Look for simple yes/no/irrelevant responses and map to new format
         response_lower = response.lower()
-        if 'yes' in response_lower:
-            return {"response": "yes"}
-        elif 'no' in response_lower:
-            return {"response": "no"}
-        elif 'irrelevant' in response_lower:
-            return {"response": "irrelevant"}
         
-        # Method 5: Try to extract key-value pairs manually
-        if '"response"' in response:
-            # Look for "response": "value" pattern
+        if 'true' in response_lower:
+            return {"llmResponse": True}
+        elif 'false' in response_lower:
+            return {"llmResponse": False}
+        elif 'null' in response_lower:
+            return {"llmResponse": None}
+        
+        # Method 5: Try to extract key-value pairs manually for both old and new formats
+        if '"llmResponse"' in response:
+            # Look for "llmResponse": value pattern
+            match = re.search(r'"llmResponse"\s*:\s*(true|false|null)', response)
+            if match:
+                value = match.group(1)
+                if value == "true":
+                    return {"llmResponse": True}
+                elif value == "false":
+                    return {"llmResponse": False}
+                else:
+                    return {"llmResponse": None}
+        elif '"response"' in response:
+            # Handle legacy "response" field and map to new format
             match = re.search(r'"response"\s*:\s*"([^"]+)"', response)
             if match:
-                return {"response": match.group(1)}
+                value = match.group(1).lower()
+                if value in ["yes", "true", "matches"]:
+                    return {"llmResponse": True}
+                elif value in ["no", "false", "doesn't match"]:
+                    return {"llmResponse": False}
+                else:
+                    return {"llmResponse": None}
         
         # Method 6: Default fallback
         print(f"Could not parse JSON from response: {response[:200]}...")
-        print(f"Using default 'maybe' response")
-        return {"response": "maybe"}
+        print(f"Using default null response")
+        return {"llmResponse": None}
 
 
 def batch_generate(prompts: List[str], max_new_tokens: int = 200, debug: bool = False) -> List[str]:
@@ -146,7 +226,7 @@ def batch_generate(prompts: List[str], max_new_tokens: int = 200, debug: bool = 
         
     except Exception as e:
         print(f"ERROR in pipeline generation: {e}")
-        return ['{"response": "maybe"}'] * len(prompts)
+        return ['{"llmResponse": null}'] * len(prompts)
     
     # Extract generated text (remove the input prompt)
     responses = []
@@ -165,7 +245,7 @@ def batch_generate(prompts: List[str], max_new_tokens: int = 200, debug: bool = 
             responses.append(response)
         except Exception as e:
             print(f"ERROR extracting response {i}: {e}")
-            responses.append('{"response": "maybe"}')
+            responses.append('{"llmResponse": null}')
     
     if debug:
         print(f"Final responses count: {len(responses)}")
@@ -284,19 +364,24 @@ def batch_generate_vision(image_text_pairs: List[Tuple], max_new_tokens: int = 2
         for i, output in enumerate(batch_outputs):
             try:
                 # Extract response from the correct output format
+                response = None
+                
                 if isinstance(output, dict) and "generated_text" in output:
                     generated_text = output["generated_text"]
-                    response = str(generated_text).strip()
+                    response = extract_assistant_response(generated_text)
                 elif isinstance(output, list) and len(output) > 0:
                     # Handle list of outputs
                     first_output = output[0]
                     if isinstance(first_output, dict) and "generated_text" in first_output:
-                        response = str(first_output["generated_text"]).strip()
+                        response = extract_assistant_response(first_output["generated_text"])
                     else:
-                        response = str(first_output).strip()
+                        response = extract_assistant_response(first_output)
                 else:
-                    response = str(output).strip()
+                    response = extract_assistant_response(output)
                 
+                if response is None:
+                    response = '{"llmResponse": null}'
+                    
                 responses.append(response)
                 
                 if debug:
@@ -304,74 +389,10 @@ def batch_generate_vision(image_text_pairs: List[Tuple], max_new_tokens: int = 2
                     
             except Exception as e:
                 print(f"ERROR extracting response {i+1}: {e}")
-                responses.append('{"response": "maybe"}')
+                responses.append('{"llmResponse": null}')
                 
     except Exception as e:
         print(f"❌ ERROR in batch processing: {e}")
-        print("🔄 Falling back to sequential processing...")
-        
-        # Fallback to sequential processing if batch processing fails
-        sequential_start = time.time()
-        
-        # Format messages for sequential processing
-        formatted_messages = []
-        for image_path, messages in image_text_pairs:
-            formatted_message = []
-            
-            for msg in messages:
-                if msg["role"] == "system":
-                    formatted_message.append({
-                        "role": "system",
-                        "content": [{"type": "text", "text": msg["content"]}]
-                    })
-                elif msg["role"] == "user":
-                    # Create user message with image and text
-                    content = []
-                    # Add image first
-                    if isinstance(image_path, str):
-                        content.append({"type": "image", "url": image_path})
-                    else:
-                        # For PIL images, we need to handle differently
-                        content.append({"type": "image", "image": image_path})
-                    
-                    # Add text
-                    content.append({"type": "text", "text": msg["content"]})
-                    
-                    formatted_message.append({
-                        "role": "user", 
-                        "content": content
-                    })
-            
-            formatted_messages.append(formatted_message)
-        
-        for i, message in enumerate(formatted_messages):
-            if debug:
-                print(f"Processing item {i+1}/{len(formatted_messages)} (fallback)")
-            
-            try:
-                output = vision_pipe(message, max_new_tokens=max_new_tokens)
-                
-                if isinstance(output, list) and len(output) > 0:
-                    generated_text = output[0].get("generated_text", [])
-                    if isinstance(generated_text, list) and len(generated_text) > 0:
-                        last_message = generated_text[-1]
-                        if isinstance(last_message, dict) and "content" in last_message:
-                            response = last_message["content"].strip()
-                        else:
-                            response = str(last_message).strip()
-                    else:
-                        response = str(generated_text).strip()
-                else:
-                    response = str(output).strip()
-                
-                responses.append(response)
-                
-            except Exception as e:
-                print(f"ERROR in fallback processing {i+1}: {e}")
-                responses.append('{"response": "maybe"}')
-        
-        sequential_time = time.time() - sequential_start
-        print(f"🔄 Sequential processing completed in {sequential_time:.2f}s ({sequential_time/len(image_text_pairs):.3f}s per item)")
     
     total_time = time.time() - start_time
     print(f"📊 Total processing time: {total_time:.2f}s for {len(image_text_pairs)} items")
