@@ -83,7 +83,7 @@ docker run --rm -p 8000:8000 -p 11434:11434 mybnb-worker ./start.sh
 
 The service will be available at `http://localhost:8000`.
 
-### Local Inference / Development
+### Local Development
 
 **Requirements:**
 
