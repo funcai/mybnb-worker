@@ -23,7 +23,7 @@ The frontend code can be found at [https://github.com/funcai/mybnb-web](https://
 ### Image + Text Classifier
 We train a classifier to find out if a image satisfies a criterion. In this part we use Gemma 3n as embedding model (from the last hidden layer) and train a classifier on top that uses attention-based pooling of the sequence dimension.
 
-The code for classifier training can be found at [finetune/train_classifier.py](finetune/train_classifier.py).
+The code for classifier training can be found at [finetune/train_classifier.ipynb](finetune/train_classifier.ipynb).
 
 ## API Endpoints
 
