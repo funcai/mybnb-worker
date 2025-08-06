@@ -9,10 +9,14 @@ def create_questions_prompt(query: str):
 
     For general questions you have to set "can_use_filter" to false and set "filter_name" to null.
     The question will then be used later on to check the apartment images/description.
+    Further, for general questions, indicate the scoring_type used to aggregate several scores from different images:
+    "one_true": One correct score is enough (e.g. if the question is "Does the apartment have a tea kettle?" because as long as one apartment shows a tea kettle, it is a match.)
+    "one_false": One incorrect score means the apartment is not a match (e.g. if the question is "Are there no steps in the apartment?" because if one image does show a step, it means the apartment is not a good fit for the user.)
+    "default": The average of all scores should be used (e.g. if the question is "Is there a lovely view outside?" because the more windows show a lovely view, the better.)
 
     # Example
     ## Query:
-    "apartment with 3 rooms and max 3000 euros monthly rent with a lovely view"
+    "apartment with 3 rooms and max 3000 euros monthly rent with a lovely view and a walk-in shower"
     ## Answer:
     ```json
     {{
@@ -22,21 +26,32 @@ def create_questions_prompt(query: str):
                 "can_use_filter": true,
                 "filter_name": "rooms",
                 "value": 3,
-                "keyword": "rooms"
+                "keyword": "rooms",
+                "scoring_type": "default",
             }},
             {{
                 "question": "Is the rent below 3000 euros monthly?",
                 "can_use_filter": true,
                 "filter_name": "rent_monthly",
                 "value": 3000,
-                "keyword": "rent_monthly"
+                "keyword": "rent_monthly",
+                "scoring_type": "default",
             }},
             {{
                 "question": "Is there a lovely view?",
                 "can_use_filter": false,
                 "filter_name": null,
                 "value": null,
-                "keyword": "Lovely view"
+                "keyword": "Lovely view",
+                "scoring_type": "default",
+            }},
+            {{
+                "question": "Does the apartment have a walk-in shower?",
+                "can_use_filter": false,
+                "filter_name": null,
+                "value": null,
+                "keyword": "walk-in shower",
+                "scoring_type": "one_true",
             }}
         ]
     }}

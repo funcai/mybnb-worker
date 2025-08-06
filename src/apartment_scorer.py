@@ -263,6 +263,7 @@ def prepare_vision_scoring_prompts(candidate_df: pd.DataFrame, qualitative_quest
         for q_idx, question_obj in enumerate(qualitative_questions):
             question_text = question_obj.get("question", "")
             keyword = question_obj.get("keyword", "")
+            scoring_type = question_obj.get("scoring_type", "default")
             
             # Track each image for this question
             for img_idx, image_url in enumerate(images):
@@ -272,6 +273,7 @@ def prepare_vision_scoring_prompts(candidate_df: pd.DataFrame, qualitative_quest
                     'question_idx': q_idx,
                     'question_text': question_text,
                     'keyword': keyword,
+                    'scoring_type': scoring_type,
                     'image_idx': img_idx,
                     'image_url': image_url,
                     'row': row
@@ -338,6 +340,7 @@ def process_vision_scoring_responses(batch_responses: List[str], prompt_metadata
         question_idx = metadata['question_idx']
         question_text = metadata['question_text']
         keyword = metadata['keyword']
+        scoring_type = metadata.get('scoring_type', 'default')
         
         # Parse vision scoring response
         scoring_dict = extract_json_from_response(response)
@@ -373,6 +376,7 @@ def process_vision_scoring_responses(batch_responses: List[str], prompt_metadata
             apartment_vision_scores[apt_idx][question_idx] = {
                 'question_text': question_text,
                 'keyword': keyword,
+                'scoring_type': scoring_type,
                 'matches': False,
                 'doesnt_match': False,
                 'responses': []
@@ -392,18 +396,42 @@ def process_vision_scoring_responses(batch_responses: List[str], prompt_metadata
 
 def calculate_vision_scores(apartment_vision_scores: Dict[int, Dict]) -> Dict[int, Dict]:
     """
-    Calculate final vision scores based on the scoring rules.
+    Calculate final vision scores based on the scoring_type aggregation strategy.
     
-    Rules:
-    - +1 if any image matches
-    - -1 if no images match but any image doesn't match
-    - 0 otherwise (all irrelevant or no images)
+    Scoring types:
+    - "default": Average of all scores (if a response is true do +1, if one is false, -1, if null, ignore. Then divide by the total amount of non-null responses)
+    - "one_true": One correct score is enough (+1 if any match, 0 otherwise)
+    - "one_false": One incorrect score means failure (-1 if any doesn't match. If none don't match set to +1 if any match, 0 otherwise)
     
     Args:
-        apartment_vision_scores: Raw vision scoring data
+        apartment_vision_scores: Raw vision scoring data with the following structure:
+            {
+                apartment_idx: {
+                    question_idx: {
+                        'question_text': str,     # The question being asked
+                        'keyword': str,           # Keyword associated with the question
+                        'scoring_type': str,      # "default", "one_true", or "one_false"
+                        'matches': bool,          # True if any image matched the question
+                        'doesnt_match': bool,     # True if any image explicitly didn't match
+                        'responses': List[str]    # List of individual image responses: ["true", "false", "null", ...]
+                    }
+                }
+            }
         
     Returns:
-        Dictionary mapping apartment index to final vision scores per question
+        Dictionary mapping apartment index to final vision scores per question:
+            {
+                apartment_idx: {
+                    question_idx: {
+                        'question': str,
+                        'score': float,
+                        'explanation': str,
+                        'matches': bool,
+                        'keyword': str,
+                        'scoring_type': str
+                    }
+                }
+            }
     """
     final_vision_scores = {}
     
@@ -413,26 +441,63 @@ def calculate_vision_scores(apartment_vision_scores: Dict[int, Dict]) -> Dict[in
         for question_idx, question_data in questions.items():
             question_text = question_data['question_text']
             keyword = question_data['keyword']
+            scoring_type = question_data.get('scoring_type', 'default')
             matches = question_data['matches']
             doesnt_match = question_data['doesnt_match']
+            responses = question_data.get('responses', [])
             
-            # Apply scoring rules
-            if matches:
-                score = 1.0
-                explanation = "Image shows matching content"
-            elif doesnt_match:
-                score = -1.0
-                explanation = "Images don't show matching content"
-            else:
-                score = 0.0
-                explanation = "Images are irrelevant or inconclusive"
-            
+            # Apply scoring rules based on scoring_type
+            if scoring_type == "one_true":
+                # One correct score is enough
+                if matches:
+                    score = 1.0
+                    explanation = "At least one image shows matching content (one_true strategy)"
+                else:
+                    score = 0.0
+                    explanation = "No images show matching content (one_true strategy)"
+                    
+            elif scoring_type == "one_false":
+                # One incorrect score means failure
+                if doesnt_match:
+                    score = -1.0
+                    explanation = "At least one image shows non-matching content (one_false strategy)"
+                elif matches:
+                    score = 1.0
+                    explanation = "Images show matching content with no contradictions (one_false strategy)"
+                else:
+                    score = 0.0
+                    explanation = "Images are irrelevant or inconclusive (one_false strategy)"
+                    
+            else:  # "default" or any other value
+                # Standard aggregation: calculate average based on individual responses
+                if not responses:
+                    score = 0.0
+                    explanation = "No image responses available (default strategy)"
+                else:
+                    # Calculate average score from individual responses
+                    true_count = responses.count("true")
+                    false_count = responses.count("false")
+                    null_count = responses.count("null")
+                    total_responses = len(responses)
+                    non_null_responses = true_count + false_count  # Only count non-null responses
+                    
+                    if non_null_responses == 0:
+                        # All responses are null - treat as neutral/inconclusive
+                        score = 0.0
+                        explanation = f"All {total_responses} responses were inconclusive (default strategy)"
+                    else:
+                        # Calculate weighted average: true=+1, false=-1, null=ignored
+                        # Divide by non-null responses only as per docstring
+                        score = (true_count - false_count) / non_null_responses
+                        explanation = f"Average score from {non_null_responses} conclusive images: {true_count} positive, {false_count} negative, {null_count} inconclusive (default strategy)"
+            print(f"Explanation {explanation} and score {score}")
             final_vision_scores[apt_idx][question_idx] = {
                 'question': question_text,
                 'score': score,
                 'explanation': explanation,
                 'matches': matches,
-                'keyword': keyword
+                'keyword': keyword,
+                'scoring_type': scoring_type
             }
     
     return final_vision_scores

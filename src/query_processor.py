@@ -15,6 +15,7 @@ class Question(BaseModel):
     filter_name: Optional[str] = None
     value: Optional[Union[str, int, float, bool]] = None
     keyword: str
+    scoring_type: Optional[str] = "default"  # "default", "one_true", or "one_false"
 
 
 class QueryAnalysis(BaseModel):
