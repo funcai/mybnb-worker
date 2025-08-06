@@ -5,6 +5,7 @@ import os
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 import torch
@@ -21,6 +22,15 @@ torch._dynamo.config.disable = True
 
 app = FastAPI(title="My helper service")
 
+# Add CORS middleware - wide open configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
+
 BASE_DIR = os.path.dirname(__file__)
 DATA_APARTMENTS = os.path.join(BASE_DIR, "apartments.json")
 
@@ -36,12 +46,11 @@ class ProcessResponse(BaseModel):
 scoring_schema = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["response"],
+    "required": ["llmResponse"],
     "properties": {
-        "response": {
-            "type": "string",
-            "enum": ["yes", "no", "irrelevant"],
-            "description": "Whether the apartment matches the question. Answer 'yes' if it matches, 'no' if it doesn't match, or 'irrelevant' if the question doesn't apply to this apartment."
+        "llmResponse": {
+            "type": ["boolean", "null"],
+            "description": "Whether the apartment matches the question. Answer true if it matches, false if it doesn't match, or null if the question doesn't apply to this apartment."
         }
     }
 }

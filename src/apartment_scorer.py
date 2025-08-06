@@ -13,7 +13,8 @@ from image_cache_multi import get_cached_image_paths
 class ScoreDetail(BaseModel):
     question: str
     score: float
-    explanation: str
+    description_matches: bool
+    vision_matches: bool
     keyword: str
 
 
@@ -28,11 +29,11 @@ class Apartment(BaseModel):
 
 
 class ScoringResponse(BaseModel):
-    response: str = Field(description="'yes', 'no', or 'irrelevant'")
+    llmResponse: bool | None = Field(description="true, false, or null")
 
 
 class VisionScoringResponse(BaseModel):
-    response: str = Field(description="'matches', 'doesn't match', or 'irrelevant'")
+    llmResponse: bool | None = Field(description="true, false, or null")
 
 
 def prepare_scoring_prompts(candidate_df: pd.DataFrame, qualitative_questions: List[Dict]) -> Tuple[List[str], List[Dict]]:
@@ -91,10 +92,9 @@ def process_scoring_responses(batch_responses: List[str], prompt_metadata: List[
         # Parse scoring response (extract_json_from_response handles all error cases)
         scoring_dict = extract_json_from_response(response)
         scoring_response = ScoringResponse.model_validate(scoring_dict)
-        response_text = scoring_response.response.lower()
-        llm_explanation = response_text
+        response_text = scoring_response.llmResponse
         
-        question_score = 1.0 if "yes" in response_text else 0.0
+        question_score = 1.0 if response_text else 0.0
         
         # Initialize apartment scores if not exists
         if apt_idx not in apartment_scores:
@@ -109,7 +109,8 @@ def process_scoring_responses(batch_responses: List[str], prompt_metadata: List[
             ScoreDetail(
                 question=question_text,
                 score=question_score,
-                explanation=llm_explanation,
+                description_matches=bool(response_text) if response_text is not None else False,
+                vision_matches=False,  # Will be updated later in vision scoring
                 keyword=keyword
             )
         )
@@ -300,13 +301,13 @@ Look at this apartment image and determine if it shows or contains what the user
 
 Respond with ONLY a JSON object in this exact format:
 {{
-    "response": "matches" | "doesn't match" | "irrelevant"
+    "llmResponse": true | false | null
 }}
 
 Guidelines:
-- "matches": The image clearly shows what the user is asking about
-- "doesn't match": The image clearly does NOT show what the user is asking about  
-- "irrelevant": The image doesn't provide enough information to determine either way"""
+- true: The image clearly shows what the user is asking about
+- false: The image clearly does NOT show what the user is asking about  
+- null: The image doesn't provide enough information to determine either way"""
         
         messages = [
             {"role": "system", "content": system_prompt},
@@ -342,25 +343,25 @@ def process_vision_scoring_responses(batch_responses: List[str], prompt_metadata
         scoring_dict = extract_json_from_response(response)
         try:
             vision_response = VisionScoringResponse.model_validate(scoring_dict)
-            raw_response = vision_response.response.lower()
+            raw_response = vision_response.llmResponse
             
             # Map various response formats to our expected values
-            if raw_response in ["matches", "yes"]:
-                response_text = "matches"
-            elif raw_response in ["doesn't match", "no"]:
-                response_text = "doesn't match"
+            if raw_response is True:
+                response_text = "true"
+            elif raw_response is False:
+                response_text = "false"
             else:
-                response_text = "irrelevant"
+                response_text = "null"
                 
         except Exception as e:
             # If JSON parsing fails, try to extract meaning from raw response
             response_lower = response.lower()
-            if "matches" in response_lower or "yes" in response_lower or "shows" in response_lower:
-                response_text = "matches"
-            elif "doesn't match" in response_lower or "no" in response_lower or "not" in response_lower:
-                response_text = "doesn't match"
+            if "true" in response_lower or "yes" in response_lower or "shows" in response_lower:
+                response_text = "true"
+            elif "false" in response_lower or "no" in response_lower or "not" in response_lower:
+                response_text = "false"
             else:
-                response_text = "irrelevant"
+                response_text = "null"
             print(f"JSON parsing failed for vision response: {e}. Extracted: '{response_text}' from: {response[:100]}...")
         
         # Initialize apartment vision scores if not exists
@@ -381,9 +382,9 @@ def process_vision_scoring_responses(batch_responses: List[str], prompt_metadata
         apartment_vision_scores[apt_idx][question_idx]['responses'].append(response_text)
         
         # Update match flags
-        if response_text == "matches":
+        if response_text == "true":
             apartment_vision_scores[apt_idx][question_idx]['matches'] = True
-        elif response_text == "doesn't match":
+        elif response_text == "false":
             apartment_vision_scores[apt_idx][question_idx]['doesnt_match'] = True
     
     return apartment_vision_scores
@@ -430,6 +431,7 @@ def calculate_vision_scores(apartment_vision_scores: Dict[int, Dict]) -> Dict[in
                 'question': question_text,
                 'score': score,
                 'explanation': explanation,
+                'matches': matches,
                 'keyword': keyword
             }
     
@@ -473,8 +475,8 @@ def integrate_vision_scores(apartment_scores: Dict[int, Dict], final_vision_scor
                     score_detail.score = new_score
                     
                     # Update explanation to include vision info
-                    vision_explanation = vision_score_data['explanation']
-                    score_detail.explanation = f"{score_detail.explanation}; Vision: {vision_explanation}"
+                    score_detail.description_matches = original_score > 0
+                    score_detail.vision_matches = vision_score_data['matches']
                     
                     # Update total score
                     apartment_scores[apt_idx]['total_score'] += vision_adjustment

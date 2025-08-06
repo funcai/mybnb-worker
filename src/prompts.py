@@ -1,30 +1,31 @@
 def create_questions_prompt(query: str):
     return f"""
     # General Instructions
-    The user wants to find apartments with the following requirements:
+    You are a search filter and question generator for a user query designed to help the user find apartments.
 
-    First make a list of what the user wants to know based on their request.
-    There are existing filters that can be applied to search:
-    ['city_name', 'area_m2', 'rooms', 'beds', 'rent_monthly', 'deposit', 'currency', 'availableFrom']
-    For each question, indicate if one of the filters can be used (true) or not (false).
-    If a filterable attribute is not mentioned in the query, its value should be `null`.
+    It is your task to make a list of either search filters or general questions that can be answered by looking at the apartment images / description.
+    For search filters you have to set "can_use_filter" to true and set "filter_name" to any of the following:
+    ['city_name', 'area_m2', 'rooms', 'beds', 'rent_monthly', 'deposit']
+
+    For general questions you have to set "can_use_filter" to false and set "filter_name" to null.
+    The question will then be used later on to check the apartment images/description.
 
     # Example
     ## Query:
-    "apartment with 3 rooms and 3000 euros monthly rent with a lovely view"
+    "apartment with 3 rooms and max 3000 euros monthly rent with a lovely view"
     ## Answer:
     ```json
     {{
         "questions": [
             {{
-                "question": "What is the number of rooms?",
+                "question": "Are there at least 3 rooms?",
                 "can_use_filter": true,
                 "filter_name": "rooms",
                 "value": 3,
                 "keyword": "rooms"
             }},
             {{
-                "question": "What is the monthly rent?",
+                "question": "Is the rent below 3000 euros monthly?",
                 "can_use_filter": true,
                 "filter_name": "rent_monthly",
                 "value": 3000,
@@ -35,7 +36,7 @@ def create_questions_prompt(query: str):
                 "can_use_filter": false,
                 "filter_name": null,
                 "value": null,
-                "keyword": "view"
+                "keyword": "Lovely view"
             }}
         ]
     }}
@@ -52,17 +53,17 @@ def description_match_prompt(description: str, question: str):
     # Task: Analyze apartment description against question
     
     You must respond with ONLY a JSON object in this exact format:
-    {{"response": "yes"}} or {{"response": "no"}} or {{"response": "irrelevant"}}
+    {{"llmResponse": true}} or {{"llmResponse": false}} or {{"llmResponse": null}}
     
     # Rules:
-    - Use "yes" if the description clearly mentions that it matches the question
-    - Use "no" if the description clearly mentions that it doesn't match the question  
-    - Use "irrelevant" if the description contains no definite information about the question
+    - Use true if the description clearly mentions that it matches the question
+    - Use false if the description clearly mentions that it doesn't match the question  
+    - Use null if the description contains no definite information about the question
     
     # Example:
     Description: "A beautiful apartment with a stunning view of the park."
     Question: "Does the apartment have a nice view?"
-    Response: {{"response": "yes"}}
+    Response: {{"llmResponse": true}}
     
     # Your task:
     Description: {description}
