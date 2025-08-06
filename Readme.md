@@ -4,23 +4,24 @@ An intelligent apartment search service that uses AI to match user queries with 
 
 The frontend code can be found at [https://github.com/funcai/mybnb-web](https://github.com/funcai/mybnb-web).
 
-
-
 ## How It Works
 
 1. **Query Processing**: User queries are parsed to extract:
+
    - Quantitative filters (rooms, rent, area, beds, etc.)
    - Qualitative questions (amenities, features, preferences)
 
 2. **Initial Filtering**: Apartments are filtered based on quantitative criteria to create a candidate pool
 
 3. **AI Scoring**: Each candidate is scored using:
+
    - **Text Analysis**: LLM evaluates apartment descriptions against qualitative questions
    - **Vision Analysis**: Vision model analyzes apartment images for visual confirmation
 
 4. **Ranking**: Apartments are ranked by combined scores and the top 50 results are returned
 
 ### Image + Text Classifier
+
 We train a classifier to find out if a image satisfies a criterion. In this part we use Gemma 3n as embedding model (from the last hidden layer) and train a classifier on top that uses attention-based pooling of the sequence dimension.
 
 The code for classifier training can be found at [finetune/train_classifier.ipynb](finetune/train_classifier.ipynb).
@@ -28,9 +29,11 @@ The code for classifier training can be found at [finetune/train_classifier.ipyn
 ## API Endpoints
 
 ### POST `/generate`
+
 Main endpoint for apartment search queries.
 
 **Request Body:**
+
 ```json
 {
   "query": "2 bedroom apartment with tea kettle near downtown"
@@ -38,6 +41,7 @@ Main endpoint for apartment search queries.
 ```
 
 **Response:**
+
 ```json
 {
   "apartments": [
@@ -62,6 +66,7 @@ Main endpoint for apartment search queries.
 ```
 
 ### GET `/healthz`
+
 Health check endpoint that returns `{"status": "ok"}`.
 
 ## Getting Started
@@ -81,10 +86,12 @@ The service will be available at `http://localhost:8000`.
 ### Local Development
 
 **Requirements:**
+
 - Python 3.10
 - Dependencies from `builder/requirements.txt`
 
 **Setup:**
+
 ```bash
 # Install dependencies
 pip install -r builder/requirements.txt
